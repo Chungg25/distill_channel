@@ -3,6 +3,7 @@ from exp.exp_basic import Exp_Basic
 from models import xPatch
 from utils.tools import EarlyStopping, adjust_learning_rate, visual
 from utils.metrics import metric
+from models.teacher import TeacherModel, causal_propagation
 
 import numpy as np
 import torch
@@ -29,6 +30,13 @@ def test_params_memory(model, input_shape):
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
+        self.teacher = TeacherModel(args).to(self.device)
+
+        self.teacher.load_state_dict(torch.load("teacher.pth", map_location=self.device))
+        self.teacher.eval()
+
+        for p in self.teacher.parameters():
+            p.requires_grad = False
 
 
     def _build_model(self):
@@ -131,6 +139,8 @@ class Exp_Main(Exp_Basic):
         model_optim = self._select_optimizer()
         # criterion = self._select_criterion() # For MSE criterion
         mse_criterion, mae_criterion = self._select_criterion()
+        distill_criterion = nn.MSELoss()
+        lambda_distill = 0.1
         epoch_times = []
 
         # # CARD's cosine learning rate decay with warmup
@@ -182,6 +192,14 @@ class Exp_Main(Exp_Basic):
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
 
+                with torch.no_grad():
+
+                    A = self.teacher(batch_x)   # B,C,C
+
+                    teacher_feat = causal_propagation(batch_x, A)   # B,T,C
+
+                    teacher_feat = teacher_feat[:, -self.args.pred_len:, :]
+
                 # CARD loss with weight decay
                 # self.ratio = np.array([max(1/np.sqrt(i+1),0.0) for i in range(self.args.pred_len)])
 
@@ -200,7 +218,15 @@ class Exp_Main(Exp_Basic):
 
                 # loss = criterion(outputs, batch_y) # For MSE criterion
 
+                forecast_loss = mae_criterion(outputs, batch_y)
+
+                distill_loss = distill_criterion(outputs, teacher_feat)
+
+                loss = forecast_loss + lambda_distill * distill_loss
+
                 train_loss.append(loss.item())
+
+                # train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
