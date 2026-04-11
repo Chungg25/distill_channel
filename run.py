@@ -5,8 +5,6 @@ from exp.exp_main import Exp_Main
 import random
 import numpy as np
 
-from exp.exp_teacher import Exp_Teacher
-
 fix_seed = 2021
 # fix_seed = 2022
 # fix_seed = 2023
@@ -17,7 +15,6 @@ torch.manual_seed(fix_seed)
 np.random.seed(fix_seed)
 
 parser = argparse.ArgumentParser(description='xPatch')
-parser.add_argument('--is_training_teacher', type=int, required=True, default=1, help='status')
 
 # basic config
 parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
@@ -28,6 +25,7 @@ parser.add_argument('--model', type=str, required=True, default='xPatch',
 parser.add_argument('--period_len', type=int, default=24, help='period length')
 parser.add_argument('--d_model', type=int, default=128, help='dimension of model')
 parser.add_argument('--n_head', type=int, default=4, help='number of attention heads')
+parser.add_argument('--group_channel', type=int, default=4, help='number of group channels')
 # data loader
 parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset type')
 parser.add_argument('--root_path', type=str, default='./dataset', help='root path of the data file')
@@ -96,44 +94,39 @@ print(args)
 
 Exp = Exp_Main
 
-if args.is_training_teacher:
-    exp_teacher = Exp_Teacher(args)
-    exp_teacher.train()
-    
+if args.is_training:
+    for ii in range(args.itr):
+        # setting record of experiments
+        setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_{}_{}'.format(
+            args.model_id,
+            args.model,
+            args.data,
+            args.features,
+            args.seq_len,
+            args.label_len,
+            args.pred_len,
+            args.des, ii)
 
-# if args.is_training:
-#     for ii in range(args.itr):
-#         # setting record of experiments
-#         setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_{}_{}'.format(
-#             args.model_id,
-#             args.model,
-#             args.data,
-#             args.features,
-#             args.seq_len,
-#             args.label_len,
-#             args.pred_len,
-#             args.des, ii)
+        exp = Exp(args)  # set experiments
+        print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+        exp.train(setting)
 
-#         exp = Exp(args)  # set experiments
-#         print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-#         exp.train(setting)
+        print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+        exp.test(setting)
 
-#         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-#         exp.test(setting)
+        torch.cuda.empty_cache()
+else:
+    ii = 0
+    setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_{}_{}'.format(args.model_id,
+                                                          args.model,
+                                                          args.data,
+                                                          args.features,
+                                                          args.seq_len,
+                                                          args.label_len,
+                                                          args.pred_len,
+                                                          args.des, ii)
 
-#         torch.cuda.empty_cache()
-# else:
-#     ii = 0
-#     setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_{}_{}'.format(args.model_id,
-#                                                           args.model,
-#                                                           args.data,
-#                                                           args.features,
-#                                                           args.seq_len,
-#                                                           args.label_len,
-#                                                           args.pred_len,
-#                                                           args.des, ii)
-
-#     exp = Exp(args)  # set experiments
-#     print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-#     exp.test(setting, test=1)
-#     torch.cuda.empty_cache()
+    exp = Exp(args)  # set experiments
+    print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+    exp.test(setting, test=1)
+    torch.cuda.empty_cache()

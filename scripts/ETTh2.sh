@@ -1,0 +1,75 @@
+#predict_len 96
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data ETTh2 
+    --learning_rate 0.007 
+    --data_path ETTh2.csv 
+    --train_epochs 100 
+    --seq_len 96 
+    --pred_len 96 
+    --enc_in 7 
+    --batch_size 2048 
+    --d_model 32 
+    --stride 12 
+    --patience 10 
+    --dropout 0.6
+
+#predict_len 192
+!python run.py 
+    --is_training 1
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data ETTh2 
+    --learning_rate 0.005 
+    --data_path ETTh2.csv 
+    --train_epochs 100 
+    --seq_len 96
+    --pred_len 192 
+    --enc_in 7 
+    --batch_size 2048
+    --d_model 32 
+    --stride 12 
+    --patience 10 
+    --dropout 0.4
+
+#predict_len 336
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data ETTh2 
+    --learning_rate 0.005
+    --data_path ETTh2.csv 
+    --train_epochs 100 
+    --seq_len 96 
+    --pred_len 336 
+    --enc_in 7 
+    --batch_size 2048 
+    --d_model 32 
+    --stride 12 
+    --patience 10
+    --dropout 0.5
+
+#predict_len 720
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data ETTh2 
+    --learning_rate 0.0004 
+    --data_path ETTh2.csv 
+    --train_epochs 100 
+    --seq_len 96 
+    --pred_len 720 
+    --enc_in 7 
+    --patience 10 
+    --batch_size 2048 
+    --d_model 32 
+    --stride 12 
+    --dropout 0.5

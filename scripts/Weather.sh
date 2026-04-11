@@ -1,0 +1,66 @@
+#predict_len 96
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0007 
+    --data_path weather.csv 
+    --seq_len 96 
+    --pred_len 96 
+    --enc_in 21 
+    --batch_size 128 
+    --stride 12 
+    --dropout 0.3 
+    --d_model 32
+
+#predict_len 192
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0007
+    --data_path weather.csv
+    --seq_len 96 
+    --pred_len 192 
+    --enc_in 21 
+    --batch_size 128 
+    --stride 12 
+    --dropout 0.3 
+    --d_model 32
+
+#predict_len 336
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0005
+    --data_path weather.csv
+    --seq_len 96 
+    --pred_len 336 
+    --enc_in 21 
+    --batch_size 2048
+    --stride 12 
+    --d_model 32
+
+#predict_len 720
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0007
+    --data_path weather.csv
+    --seq_len 96 
+    --pred_len 720 
+    --enc_in 21 
+    --batch_size 2048
+    --stride 12 
+    --d_model 32
+    --dropout 0.1

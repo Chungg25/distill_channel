@@ -3,7 +3,6 @@ from torch import nn
 
 from layers.ema import EMA
 from layers.dema import DEMA
-from layers.wma import WMA
 from layers.sma import moving_avg
 
 class DECOMP(nn.Module):
@@ -18,8 +17,6 @@ class DECOMP(nn.Module):
             self.ma = DEMA(alpha)
         elif ma_type == 'sma':
             self.ma = moving_avg()
-        elif ma_type == 'wma':
-            self.ma = WMA(window_size)
         
 
     def forward(self, x):

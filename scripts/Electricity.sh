@@ -1,0 +1,67 @@
+#predict_len 96
+!python run.py 
+    --is_training 0 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0008 
+    --data_path electricity.csv 
+    --seq_len 96 
+    --pred_len 96 
+    --enc_in 321 
+    --batch_size 32 
+    --d_model 32 
+    --stride 12 
+    --train_epochs 200 
+
+#predict_len 192
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0005 
+    --data_path electricity.csv 
+    --seq_len 96 
+    --pred_len 192 
+    --enc_in 321 
+    --batch_size 4 
+    --d_model 32 
+    --stride 12 
+    --train_epochs 200
+
+#predict_len 336
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0008 
+    --data_path electricity.csv 
+    --seq_len 96 
+    --pred_len 336 
+    --enc_in 321 
+    --batch_size 64 
+    --d_model 32 
+    --stride 12 
+    --train_epochs 200
+
+#predict_len 720
+!python run.py 
+    --is_training 1 
+    --model LGT 
+    --model_id lgt_test 
+    --ma_type dema 
+    --data custom 
+    --learning_rate 0.0008 
+    --data_path electricity.csv 
+    --seq_len 96 
+    --pred_len 720 
+    --enc_in 321 
+    --batch_size 64 
+    --d_model 32 
+    --stride 12 
+    --train_epochs 200
