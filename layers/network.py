@@ -11,6 +11,7 @@ class AdaptiveFusion(nn.Module):
            alpha = torch.sigmoid(self.fc(torch.cat([s, t], dim=-1)))
            return alpha * s + (1 - alpha) * t  # [B*C, pred_len]
 
+
 # ========================
 # Patch GLU
 # ========================
@@ -62,6 +63,7 @@ class LiteGroupTransformerChannel(nn.Module):
             nn.Linear(d_model, num_groups)
         )
 
+
         # 🔥 transformer trên group (NHẸ vì G nhỏ)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -76,6 +78,7 @@ class LiteGroupTransformerChannel(nn.Module):
             encoder_layer,
             num_layers=2   # 🔥 chỉ 1 layer là đủ
         )
+        self.temperature = nn.Parameter(torch.tensor(1.0))
 
         self.norm = nn.LayerNorm(d_model)
 
@@ -152,7 +155,12 @@ class SpectralTrendRefineBlock(nn.Module):
 
         self.norm = nn.LayerNorm(seq_len)
         self.dropout = nn.Dropout(dropout)
-        self.proj = nn.Linear(seq_len, pred_len)
+        self.proj = nn.Sequential(
+            nn.Linear(seq_len, pred_len * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(pred_len * 2, pred_len)
+        )
 
     def forward(self, x):
         # x: [B, C, T] (đã là TREND từ decomposition)
@@ -180,7 +188,7 @@ class SpectralTrendRefineBlock(nn.Module):
         # 4. RESIDUAL (QUAN TRỌNG)
         # ======================
         # chỉ học correction thay vì thay thế hoàn toàn
-        x_time = x + self.beta * x_time_refined
+        x_time = x + x_time_refined
 
         # ======================
         # 5. NORMALIZE + DROPOUT
@@ -200,7 +208,7 @@ class SpectralTrendRefineBlock(nn.Module):
 # ========================
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch,
-                 dropout=0.1, d_model=64, nhead=4, num_layers=2, groups=8):
+                 dropout=0.1, d_model=64, nhead=4, num_layers=2):
         super().__init__()
 
         self.pred_len = pred_len
@@ -214,14 +222,14 @@ class Network(nn.Module):
             patch_num += 1
 
         self.patch_num = patch_num
-        self.alpha = nn.Parameter(torch.full((1, 862, 1), -1.0))
+        self.alpha = nn.Parameter(torch.ones(1, 862, 1))
 
         # 🔥 Channel path (seasonal)
         self.seasonal_channel = LiteGroupTransformerChannel(
             seq_len,
             pred_len,
             d_model=d_model,
-            num_groups=groups,   # 🔥 quan trọng
+            num_groups=128,   # 🔥 quan trọng
             nhead=nhead,
             dropout=dropout
         )
@@ -243,14 +251,6 @@ class Network(nn.Module):
             num_layers=num_layers
         )
 
-        # self.temporal_pool = nn.Sequential(
-        #     nn.Linear(d_model, d_model),
-        #     nn.GELU(),
-        #     nn.Linear(d_model, 1)
-        # )
-
-        # self.out_linear = nn.Linear(d_model, pred_len)
-
         # Seasonal head (temporal path)
         self.flatten = nn.Flatten(start_dim=-2)
         self.linear_seasonal = nn.Linear(self.patch_num * d_model, pred_len*2)
@@ -259,6 +259,14 @@ class Network(nn.Module):
         self.linear_seasonal2 = nn.Linear(pred_len*2, pred_len)
 
         self.adaptive_fusion = AdaptiveFusion(pred_len)
+
+        # 🔥 Trend (GIỮ NGUYÊN)
+        # self.linear_trend = nn.Linear(seq_len, pred_len * 2)
+        # self.avg_trend = nn.AvgPool1d(kernel_size=2)
+        # self.ln_trend = nn.LayerNorm(pred_len)
+        # self.gelu_trend = nn.GELU()
+        # self.dropout_trend = nn.Dropout(dropout)
+        # self.linear_trend2 = nn.Linear(pred_len, pred_len)
 
         self.trend = SpectralTrendRefineBlock(seq_len, pred_len)
 
@@ -315,27 +323,26 @@ class Network(nn.Module):
         s_temporal = self.dropout_seasonal(s_temporal)
         s_temporal = self.linear_seasonal2(s_temporal).view(B, C, self.pred_len)
 
-
-        # attn = self.temporal_pool(s_patch)          # [BC, P, 1]
-        # attn = torch.softmax(attn, dim=1)           # normalize theo patch
-
-        # # weighted sum
-        # pooled = (s_patch * attn).sum(dim=1)       # [BC, D]
-
-        # pooled = pooled + s_patch.mean(dim=1)
-
-        # # project
-        # s_temporal = self.out_linear(pooled).view(B, C, self.pred_len)
-
+        # ======================
+        # 🔥 3. FUSION SEASONAL
+        # ======================
         s = self.adaptive_fusion(s_channel, s_temporal)
         s = s.view(B, C, self.pred_len)
-
+        # hoặc:
+        # alpha = torch.sigmoid(self.alpha)
+        # s = alpha * s_channel + (1 - alpha) * s_temporal
 
         # ======================
         # 🔥 4. TREND (KHÔNG ĐỤNG)
         # ======================
         t = t.reshape(B * C, I)
 
+        # t = self.linear_trend(t)
+        # t = self.avg_trend(t)
+        # t = self.ln_trend(t)
+        # t = self.gelu_trend(t)
+        # t = self.dropout_trend(t)
+        # t = self.linear_trend2(t).view(B, C, self.pred_len)
         t = self.trend(t).view(B, C, self.pred_len)
 
         # ======================
