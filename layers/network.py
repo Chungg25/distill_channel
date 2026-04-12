@@ -117,7 +117,13 @@ class SpectralTrendRefineBlock(nn.Module):
 
         self.norm = nn.LayerNorm(seq_len)
         self.dropout = nn.Dropout(dropout)
-        self.proj = nn.Linear(seq_len, pred_len)
+        # self.proj = nn.Linear(seq_len, pred_len)
+        self.proj = nn.Sequential(
+            nn.Linear(seq_len, pred_len),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(pred_len, pred_len)
+        )
 
     def forward(self, x):
         # x: [B, C, T] (đã là TREND từ decomposition)
