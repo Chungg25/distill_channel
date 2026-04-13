@@ -159,6 +159,7 @@ class Network(nn.Module):
             patch_num += 1
 
         self.patch_num = patch_num
+        self.alpha = nn.Parameter(torch.ones(1, 862, 1))
 
         self.seasonal_channel = LiteGroupTransformerChannel(
             seq_len,
@@ -237,8 +238,11 @@ class Network(nn.Module):
         s_temporal = self.dropout_seasonal(s_temporal)
         s_temporal = self.linear_seasonal2(s_temporal).view(B, C, self.pred_len)
 
-        s = self.adaptive_fusion(s_channel, s_temporal)
-        s = s.view(B, C, self.pred_len)
+        alpha = torch.sigmoid(self.alpha)
+        s = alpha * s_channel + (1 - alpha) * s_temporal
+
+        # s = self.adaptive_fusion(s_channel, s_temporal)
+        # s = s.view(B, C, self.pred_len)
 
         t = t.reshape(B * C, I)
 
