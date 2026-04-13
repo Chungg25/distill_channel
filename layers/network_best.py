@@ -67,10 +67,10 @@ class LiteGroupTransformerChannel(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
         self.head = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
+            nn.Linear(d_model, pred_len * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model * 2, pred_len)
+            nn.Linear(pred_len * 2, pred_len)
         )
 
     def forward(self, x):
