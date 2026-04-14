@@ -5,10 +5,10 @@ import torch.nn.functional as F
 class AdaptiveFusion(nn.Module):
     def __init__(self, pred_len):
         super().__init__()
-        self.fc = nn.Linear(pred_len*2, pred_len)
+        self.fc = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
-           alpha = torch.sigmoid(self.fc(torch.cat([s, t], dim=-1)))
+           alpha = torch.sigmoid(self.fc(s+t))
            return alpha * s + (1 - alpha) * t  # [B*C, pred_len]
 
 class PatchChannelGLU(nn.Module):
@@ -67,10 +67,10 @@ class LiteGroupTransformerChannel(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
         self.head = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
+            nn.Linear(d_model, pred_len * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model * 2, pred_len)
+            nn.Linear(pred_len * 2, pred_len)
         )
 
     def forward(self, x):
@@ -159,7 +159,6 @@ class Network(nn.Module):
             patch_num += 1
 
         self.patch_num = patch_num
-        self.alpha = nn.Parameter(torch.ones(1, 862, 1))
 
         self.seasonal_channel = LiteGroupTransformerChannel(
             seq_len,
@@ -238,11 +237,8 @@ class Network(nn.Module):
         s_temporal = self.dropout_seasonal(s_temporal)
         s_temporal = self.linear_seasonal2(s_temporal).view(B, C, self.pred_len)
 
-        alpha = torch.sigmoid(self.alpha)
-        s = alpha * s_channel + (1 - alpha) * s_temporal
-
-        # s = self.adaptive_fusion(s_channel, s_temporal)
-        # s = s.view(B, C, self.pred_len)
+        s = self.adaptive_fusion(s_channel, s_temporal)
+        s = s.view(B, C, self.pred_len)
 
         t = t.reshape(B * C, I)
 
