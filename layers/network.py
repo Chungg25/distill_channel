@@ -5,10 +5,10 @@ import torch.nn.functional as F
 class AdaptiveFusion(nn.Module):
     def __init__(self, pred_len):
         super().__init__()
-        self.fc = nn.Linear(pred_len, pred_len)
+        self.fc = nn.Linear(pred_len*2, pred_len)
 
     def forward(self, s, t):
-           alpha = torch.sigmoid(self.fc(s+t))
+           alpha = torch.sigmoid(self.fc(torch.cat([s, t], dim=-1)))
            return alpha * s + (1 - alpha) * t  # [B*C, pred_len]
 
 class PatchChannelGLU(nn.Module):
