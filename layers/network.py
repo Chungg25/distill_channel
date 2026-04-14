@@ -237,7 +237,8 @@ class Network(nn.Module):
         s_temporal = self.dropout_seasonal(s_temporal)
         s_temporal = self.linear_seasonal2(s_temporal).view(B, C, self.pred_len)
 
-        s = self.adaptive_fusion(s_channel, s_temporal)
+        # s = self.adaptive_fusion(s_channel, s_temporal)
+        s = s_channel + s_temporal
         s = s.view(B, C, self.pred_len)
 
         t = t.reshape(B * C, I)
