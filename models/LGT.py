@@ -18,7 +18,7 @@ class Model(nn.Module):
         d_model = configs.d_model    # dimension of model
         period_len = configs.period_len  # period length
         nhead = configs.n_head      # number of attention heads
-        groups = configs.group_channel    # number of group channels
+        expand = configs.expand
 
         # Patching
         patch_len = configs.patch_len
@@ -36,28 +36,26 @@ class Model(nn.Module):
 
         dropout = configs.dropout
         num_layers = configs.num_layers
+        num_groups = configs.num_groups
 
         self.decomp = DECOMP(self.ma_type, alpha, beta, period_len)
 
-        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, dropout, d_model, nhead, num_layers, groups)
+        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, dropout, d_model, nhead, num_layers, expand, num_groups)
 
-    def forward(self, x):
+    def forward(self, x, current_epoch=0, max_epochs=1):
         # x: [Batch, Input, Channel]
         # Normalization
         if self.revin:
             x = self.revin_layer(x, 'norm')
-
-
-        if self.ma_type == 'reg':   # If no decomposition, directly pass the input to the network
-            x = self.net(x, x)
+        aux_losses = {}
+        if self.ma_type == 'reg':   
+            x, aux_losses = self.net(x, x, current_epoch, max_epochs)
         if self.ma_type == 'sma':  
             resid_init, trend_init = self.decomp(x)
-            x = self.net(resid_init, trend_init)
+            x, aux_losses = self.net(resid_init, trend_init, current_epoch, max_epochs)
         if self.ma_type == 'dema':
             seasonal_init, trend_init = self.decomp(x)
-            x = self.net(seasonal_init, trend_init)
-
+            x, aux_losses = self.net(seasonal_init, trend_init, current_epoch, max_epochs)
         if self.revin:
             x = self.revin_layer(x, 'denorm')
-
-        return x
+        return x, aux_losses

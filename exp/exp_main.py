@@ -58,7 +58,11 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
-                outputs = self.model(batch_x)
+                result = self.model(batch_x)
+                if isinstance(result, tuple):
+                    outputs, _ = result
+                else:
+                    outputs = result
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
@@ -117,7 +121,12 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
-                outputs = self.model(batch_x)
+                # result = self.model(batch_x)
+                result = self.model(batch_x, current_epoch=epoch, max_epochs=self.args.train_epochs)
+                if isinstance(result, tuple):
+                    outputs, aux_losses = result
+                else:
+                    outputs, aux_losses = result, {}
                 # train_time += time.time() - temp # For computational cost analysis
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -127,6 +136,27 @@ class Exp_Main(Exp_Basic):
                 batch_y = batch_y
 
                 loss = mae_criterion(outputs, batch_y)
+
+                if aux_losses:
+                    adaptive_w = aux_losses.pop('_adaptive_weights', {})
+                    for key in aux_losses:
+                        w = adaptive_w.get(key, 0.01)
+                        if isinstance(w, torch.Tensor) and w.dim() > 0:
+                            w = w.mean()
+                            
+                        val = aux_losses[key]
+                        if isinstance(val, torch.Tensor) and val.dim() > 0:
+                            val = val.mean()
+                            
+                        loss = loss + w * val
+
+                # ---- Adaptive Auxiliary Losses ----
+                # if aux_losses:
+                #     adaptive_w = aux_losses.pop('_adaptive_weights', {})
+                #     for key in aux_losses:
+                #         w = adaptive_w.get(key, 0.01)
+                #         # print(key, w)
+                #         loss = loss + w * aux_losses[key]
 
                 train_loss.append(loss.item())
 
@@ -205,7 +235,11 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                outputs = self.model(batch_x)
+                result = self.model(batch_x)
+                if isinstance(result, tuple):
+                    outputs, _ = result
+                else:
+                    outputs = result
                 # test_time += time.time() - temp # For computational cost analysis
 
                 f_dim = -1 if self.args.features == 'MS' else 0

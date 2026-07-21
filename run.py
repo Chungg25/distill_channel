@@ -25,7 +25,8 @@ parser.add_argument('--model', type=str, required=True, default='xPatch',
 parser.add_argument('--period_len', type=int, default=24, help='period length')
 parser.add_argument('--d_model', type=int, default=128, help='dimension of model')
 parser.add_argument('--n_head', type=int, default=4, help='number of attention heads')
-parser.add_argument('--group_channel', type=int, default=4, help='number of group channels')
+parser.add_argument('--expand', type=int, default=2, help='expansion factor for the model')
+parser.add_argument('--num_groups', type=int, default=128, help='number of group channels')
 # data loader
 parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset type')
 parser.add_argument('--root_path', type=str, default='./dataset', help='root path of the data file')
