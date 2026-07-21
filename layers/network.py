@@ -329,6 +329,7 @@ class Network(nn.Module):
             patch_num += 1
 
         self.patch_num = patch_num
+        self.alpha = nn.Parameter(torch.ones(1, 321, 1))
 
         self.decor_loss = DecorrelationLoss()
         self.aux_weighter = AdaptiveAuxLossWeighter()
@@ -442,7 +443,10 @@ class Network(nn.Module):
             self.pred_len
         )
 
-        s = channel + temporal
+        alpha = torch.sigmoid(self.alpha)
+        s = alpha * channel + (1 - alpha) * temporal
+
+        # s = channel + temporal
 
         spectral = self.spectral(x2).view(B, C, self.pred_len)
         
