@@ -373,6 +373,7 @@ class Network(nn.Module):
             nn.Linear(d_model, patch_len)
         )
         
+        self.patch_importance = nn.Linear(d_model,1)
         self.spectral = SpectralTimeBlock(seq_len, pred_len, expand)
 
 
@@ -412,6 +413,13 @@ class Network(nn.Module):
         s_patch_residual = s_patch
         s_patch = self.transformer_encoder(s_patch)
         s_patch = s_patch + s_patch_residual
+
+        importance = torch.softmax(
+            self.patch_importance(s_patch),
+            dim=1
+        )
+
+        s_patch = s_patch * importance
 
         x = s_patch
 
