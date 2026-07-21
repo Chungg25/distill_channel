@@ -329,7 +329,7 @@ class Network(nn.Module):
             patch_num += 1
 
         self.patch_num = patch_num
-        self.alpha = nn.Parameter(torch.ones(1, 321, 1))
+        self.alpha = nn.Parameter(torch.ones(1, 7, 1))
 
         self.decor_loss = DecorrelationLoss()
         self.aux_weighter = AdaptiveAuxLossWeighter()
