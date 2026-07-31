@@ -12,7 +12,15 @@ class GroupChannelBlock(nn.Module):
 
         self.embed = nn.Linear(seq_len, d_model)
 
-        self.group_tokens = nn.Parameter(torch.randn(num_groups, d_model))
+        # self.group_tokens = nn.Parameter(torch.randn(num_groups, d_model))
+        self.group_seed = nn.Parameter(torch.randn(num_groups, d_model))
+        
+        # Sinh ra cả Scale (Gamma) và Shift (Beta)
+        self.modulator = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, d_model * 2) # x2 để chia làm scale và shift
+        )
 
         self.temperature = temperature
         self.num_groups = num_groups
@@ -29,7 +37,8 @@ class GroupChannelBlock(nn.Module):
                     nn.Dropout(dropout),
                     nn.Linear(d_model * 4, d_model)
                 ),
-                "norm2": nn.LayerNorm(d_model)
+                "norm2": nn.LayerNorm(d_model),
+                "attn_gate": nn.Linear(d_model, d_model),
             })
             for _ in range(num_layers)
         ])
@@ -38,12 +47,12 @@ class GroupChannelBlock(nn.Module):
             nn.Linear(d_model, d_model),
             nn.Sigmoid()
         )
-
+        
         self.head = nn.Sequential(
-            nn.Linear(d_model, pred_len*expand),
+            nn.Linear(d_model, pred_len * expand),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(pred_len*expand, pred_len)
+            nn.Linear(pred_len * expand, pred_len)
         )
 
     def forward(self, x):
@@ -52,11 +61,16 @@ class GroupChannelBlock(nn.Module):
 
         x_embed = self.embed(x)  # [B, C, D]
 
-        context = x_embed.mean(dim=1, keepdim=True)  # [B, 1, D]
+        context = x_embed.mean(dim=1)  # [B, d_model]
+        
+        # Sinh ra modulation [B, 1, d_model * 2]
+        mod = self.modulator(context).unsqueeze(1) 
+        scale, shift = mod.chunk(2, dim=-1) # [B, 1, d_model] mỗi phần tử
 
-        group_tokens = self.group_tokens.unsqueeze(0) + context  # [B, G, D]
+        # FiLM: Scale & Shift
+        group_tokens = self.group_seed.unsqueeze(0) * scale + shift
 
-        sim = torch.einsum('bcd,bgd->bcg', x_embed, group_tokens)
+        sim = torch.einsum('bcd,bgd->bcg', x_embed, group_tokens) / math.sqrt(self.embed.out_features)
 
         assign  = torch.softmax(sim / self.temperature, dim=-1)
 
@@ -67,17 +81,24 @@ class GroupChannelBlock(nn.Module):
 
         for layer in self.layers:
             residual = group_feat
-            attn_out, _ = layer["attn"](group_feat, group_feat, group_feat)
-            group_feat = layer["norm1"](residual + attn_out)
+            normed1 = layer["norm1"](group_feat)
+            attn_out, _ = layer["attn"](normed1, normed1, normed1)
+            attn_gate = torch.sigmoid(layer["attn_gate"](residual))
+            group_feat = residual + attn_out * attn_gate
 
             residual = group_feat
-            ffn_out = layer["ffn"](group_feat)
-            group_feat = layer["norm2"](residual + ffn_out)
+            normed2 = layer["norm2"](group_feat)
+            ffn_out = layer["ffn"](normed2)
+            group_feat = residual + ffn_out
+
+        self._last_group_feat = group_feat 
 
         out = torch.einsum('bcg,bgd->bcd', assign, group_feat)
 
         gate = self.channel_gate(x_embed)
         out = out * gate + x_embed  
+
+        self._last_latent = out  
 
         out = self.head(out)
 
@@ -92,114 +113,90 @@ class GroupChannelBlock(nn.Module):
         """
         losses = {}
 
-        # --- Diversity Loss: L_div = ||G̃ G̃ᵀ − I||²_F ---
-        # Forces group tokens to be orthogonal (non-redundant experts)
-        G_norm = F.normalize(self.group_tokens, dim=-1)  # [G, D]
-        gram = G_norm @ G_norm.T                          # [G, G]
-        I = torch.eye(self.num_groups, device=gram.device)
-        losses['diversity'] = (gram - I).pow(2).mean()
-        self._last_gram = gram 
-        # --- Balance Loss: L_bal = Σ_g (p̄_g − 1/G)² ---
-        # Forces channels to be distributed evenly across groups
-        assign = self._last_assign               # [B, C, G]
-        p_bar = assign.mean(dim=1).mean(dim=0)   # [G]
-        losses['balance'] = ((p_bar - 1.0 / self.num_groups) ** 2).sum()
-        self._last_p_bar = p_bar 
+        group_feat = self._last_group_feat  # [B, G, D]
+        G_norm = F.normalize(group_feat.mean(dim=0), dim=-1)  # [G, D]
+        gram = G_norm @ G_norm.T  # [G, G]
+        mask = ~torch.eye(self.num_groups, dtype=torch.bool, device=gram.device)
+        losses['diversity'] = gram[mask].pow(2).mean()
 
-        # --- Sharpness Loss (Entropy): L_sharp = −(1/C)ΣΣ A_{c,g} log A_{c,g} ---
-        # Minimizing entropy forces decisive (one-hot-like) assignments
+        assign = self._last_assign  # [B, C, G]
+        p_bar = assign.mean(dim=1).mean(dim=0)  # [G]
+        losses['anti_collapse'] = -torch.log(p_bar + 1e-6).mean()
+
         eps = 1e-8
         log_assign = (assign + eps).log()
         entropy = -(assign * log_assign).sum(dim=-1)
         losses['sharpness'] = entropy.mean()
-        self._last_entropy = entropy 
-        losses['_num_groups'] = self.num_groups 
 
         return losses
 
 class DecorrelationLoss(nn.Module):
-    """
-    L_decor = Σ_{i≠j} ( cos_sim(Y_i, Y_j) )²
-
-    Penalizes cosine similarity between branch outputs to enforce
-    orthogonal (complementary) feature learning.
-    """
-
     def forward(self, *branch_outputs):
         loss = 0.0
         n = len(branch_outputs)
         for i in range(n):
             for j in range(i + 1, n):
-                yi = branch_outputs[i].reshape(branch_outputs[i].shape[0], -1)
-                yj = branch_outputs[j].reshape(branch_outputs[j].shape[0], -1)
+                # [B, C, D] or [B, C, T] → [B, C]
+                yi = branch_outputs[i].mean(dim=-1)
+                yj = branch_outputs[j].mean(dim=-1)
                 cos_sim = F.cosine_similarity(yi, yj, dim=-1)  # [B]
                 loss = loss + (cos_sim ** 2).mean()
         return loss
 
 class AdaptiveAuxLossWeighter(nn.Module):
     """
-    lambda_i = lambda_base_i * tanh(signal_i / tau)
+    Inverse-scaling adaptive weighter:
+    - When main_loss is HIGH (early training) → reduce aux weights (let model learn forecasting first)
+    - When main_loss is LOW (model converged) → increase aux weights (refine structure)
+    - Sharpness has warmup: off for first 5 epochs, then linear ramp
+    - Cosine decay towards end of training
     """
 
-    def __init__(self, lambda_decor=0.005, lambda_div=0.01,
-                 lambda_bal=0.05, lambda_sharp=0.05, tau_init=0.3, ema_decay=0.9):
-        super().__init__() 
+    def __init__(self, lambda_decor=0.001, lambda_div=0.001,
+                 lambda_collapse=0.005, lambda_sharp=0.005, ema_decay=0.95):
+        super().__init__()
         self.lambda_base = {
             'decorrelation': lambda_decor,
             'diversity': lambda_div,
-            'balance': lambda_bal,
+            'anti_collapse': lambda_collapse,
             'sharpness': lambda_sharp,
         }
         self.ema_decay = ema_decay
-        self.register_buffer('tau_decor', torch.tensor(tau_init))
-        self.register_buffer('tau_div', torch.tensor(tau_init))
-        self.register_buffer('tau_bal', torch.tensor(tau_init))
-        self.register_buffer('tau_sharp', torch.tensor(tau_init))
-        self.tau_dict = {
-            'decorrelation': 'tau_decor', 'diversity': 'tau_div',
-            'balance': 'tau_bal', 'sharpness': 'tau_sharp',
-        }
-
+        self.register_buffer('ema_main_loss', torch.tensor(1.0))
 
     @torch.no_grad()
-    def compute_weights(self, aux_losses, current_epoch=0, max_epochs=1):
+    def compute_weights(self, aux_losses, current_epoch=0, max_epochs=1, main_loss=None):
         weights = {}
+
+        if main_loss is not None:
+            self.ema_main_loss.copy_(
+                self.ema_decay * self.ema_main_loss + (1 - self.ema_decay) * main_loss
+            )
+
+        inv_scale = 1.0 / (1.0 + self.ema_main_loss.item())
+
         if max_epochs > 1:
-            decay_factor = 0.5 * (1 + math.cos(math.pi * current_epoch / max_epochs))
+            decay = 0.5 * (1 + math.cos(math.pi * current_epoch / max_epochs))
         else:
-            decay_factor = 1.0
-        # Lấy chính xác số groups từ cấu trúc mạng (default 128 đề phòng lỗi)
-        G = aux_losses.get('_num_groups', 128)
-        max_entropy = math.log(G)
-        for key, loss_tensor in aux_losses.items():
-            # Bỏ qua các key dùng làm metadata (bắt đầu bằng '_')
-            if key.startswith('_'):
+            decay = 1.0
+
+        for key in self.lambda_base:
+            if key not in aux_losses:
                 continue
-            val = loss_tensor.detach()
-            if val.dim() > 0: val = val.mean()
-            # Tái sử dụng giá trị Loss làm Signal
-            if key == 'decorrelation':
-                signal = torch.sqrt(val)  
-            elif key == 'diversity':
-                signal = torch.sqrt(val)  
-            elif key == 'balance':
-                signal = torch.sqrt(val)  
-            elif key == 'sharpness':
-                # Tính chuẩn xác tuyệt đối không cần ước lượng
-                signal = (val / max_entropy).clamp(0, 1)
+
+            if key == 'sharpness':
+                warmup_epochs = 5
+                if current_epoch < warmup_epochs:
+                    weights[key] = 0.0
+                    continue
+                ramp = min(1.0, (current_epoch - warmup_epochs) / warmup_epochs)
+                weights[key] = self.lambda_base[key] * ramp * inv_scale * decay
             else:
-                signal = val
-            # Cập nhật EMA Tau
-            tau_name = self.tau_dict[key]
-            current_tau = getattr(self, tau_name)
-            if self.training:
-                new_tau = self.ema_decay * current_tau + (1 - self.ema_decay) * signal
-                current_tau.copy_(new_tau.clamp(min=1e-4))
-            
-            # Tính weight
-            current_lambda = self.lambda_base[key] * decay_factor
-            weights[key] = current_lambda * torch.tanh(signal / current_tau)
+                weights[key] = self.lambda_base[key] * inv_scale * decay
+
         return weights
+
+
 
 class PatchChannelGLU(nn.Module):
     def __init__(self, patch_len, d_model):
@@ -243,73 +240,61 @@ class SpectralTimeBlock(nn.Module):
 
         self.F = seq_len // 2 + 1
 
-        self.kernel = nn.Parameter(
-            torch.eye(2)
-            .unsqueeze(0)
-            .repeat(self.F, 1, 1)
-        )
-        self.beta = nn.Parameter(
-            torch.tensor(0.1)
-        )
+        self.amp_gate = nn.Parameter(torch.ones(self.F))
+        self.phase_shift = nn.Parameter(torch.zeros(self.F))
 
         self.norm = nn.LayerNorm(seq_len)
+
+        bottleneck_dim = max(16, seq_len // 8)
+        self.res_gate = nn.Sequential(
+            nn.Linear(seq_len, seq_len//2),
+            nn.GELU(),                           
+            nn.Linear(seq_len//2, seq_len),
+            nn.Sigmoid()                          
+        )
 
         self.dropout = nn.Dropout(dropout)
 
         self.proj = nn.Sequential(
-            nn.Linear(seq_len, pred_len*expand),
+            nn.Linear(seq_len, 32 * 1),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(pred_len*expand, pred_len)
+            nn.Linear(32 * 1, pred_len)
         )
 
     def forward(self, x):
         """
         x: [B,C,T]
         """
-
         B, C, T = x.shape
 
-        x_freq = torch.fft.rfft(
-            x,
-            dim=-1
-        )
-        # [B,C,F]
+        x_freq = torch.fft.rfft(x, dim=-1)  # [B, C, F]
 
-        Re = x_freq.real
-        Im = x_freq.imag
+        amp = torch.abs(x_freq)       # [B, C, F]
+        phase = torch.angle(x_freq)   # [B, C, F]
 
-        real_new = (
-            self.kernel[:, 0, 0] * Re +
-            self.kernel[:, 0, 1] * Im
-        )
+        amp = amp * torch.sigmoid(self.amp_gate)   # [F] broadcasts to [B, C, F]
 
-        imag_new = (
-            self.kernel[:, 1, 0] * Re +
-            self.kernel[:, 1, 1] * Im
-        )
+        phase = phase + self.phase_shift  # [F] broadcasts to [B, C, F]
 
         x_freq_refined = torch.complex(
-            real_new,
-            imag_new
+            amp * torch.cos(phase),
+            amp * torch.sin(phase)
         )
 
-        x_time_refined = torch.fft.irfft(
-            x_freq_refined,
-            n=T,
-            dim=-1
-        )
+        x_time_refined = torch.fft.irfft(x_freq_refined, n=T, dim=-1)
 
-
-        x_time = x + self.beta * x_time_refined
+        gate = self.res_gate(x)  # [B, C, T]
+        x_time = x + gate * x_time_refined
 
         x_time = self.norm(x_time)
+        self._last_latent = x_time  # [B, C, T] for decorrelation loss
         x_time = self.dropout(x_time)
 
         out = self.proj(x_time)
 
         return out
-
+        
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch,
                  dropout=0.1, d_model=64, nhead=4, num_layers=2, expand=2, num_groups=128):
@@ -319,86 +304,80 @@ class Network(nn.Module):
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
-
         patch_num = (seq_len - patch_len) // stride + 1
-        self.future_patch_num = math.ceil(
-            pred_len / patch_len
-        )
+        self.future_patch_num = math.ceil(pred_len / patch_len)
         if padding_patch == 'end':
             self.padding_patch_layer = nn.ReplicationPad1d((0, stride))
             patch_num += 1
-
         self.patch_num = patch_num
-        self.alpha = nn.Parameter(torch.ones(1, 7, 1))
-
         self.decor_loss = DecorrelationLoss()
         self.aux_weighter = AdaptiveAuxLossWeighter()
-
         self.seasonal_channel = GroupChannelBlock(
-            seq_len,
-            pred_len,
-            d_model=d_model,
-            num_groups=num_groups,  
-            nhead=nhead,
-            dropout=dropout,
-            expand=expand
+            seq_len, pred_len, d_model=d_model, num_groups=num_groups,  
+            nhead=nhead, dropout=dropout, expand=expand
         )
-
         self.patch_conv = LocalTemporal(kernel_size=3, dilation=1)
         self.patch_glu = PatchChannelGLU(patch_len, d_model)
         self.patch_embed = nn.Linear(d_model, d_model)
 
         self.transformer_encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=d_model * 2,
-                dropout=dropout,
-                batch_first=True,
-                activation='gelu'
+                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 2,
+                dropout=dropout, batch_first=True, activation='gelu', 
+                norm_first=True 
             ),
             num_layers=num_layers
         )
+        self.repr_norm = nn.LayerNorm(d_model)
 
         self.patch_forecast = nn.Sequential(
-            nn.Linear(self.patch_num, self.future_patch_num),
+            nn.Linear(self.patch_num, 32),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(self.future_patch_num, self.future_patch_num)
+            nn.Linear(32, self.future_patch_num)
         )
 
-        self.patch_decoder = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model, patch_len)
+        # self.patch_forecast = nn.Sequential(
+        #     nn.Linear(self.patch_num, self.future_patch_num)
+        # )
+        
+        self.context_generator = nn.Linear(d_model, self.future_patch_num)
+        
+        self.forecast_gate = nn.Linear(self.patch_num, self.future_patch_num)
+        
+        self.smoothing_conv = nn.Conv1d(
+            in_channels=d_model, out_channels=d_model, kernel_size=3, padding=1, padding_mode='replicate'
         )
         
-        self.patch_importance = nn.Linear(d_model,1)
+        self.base_linear = nn.Linear(d_model, patch_len)
+        self.patch_decoder = nn.Sequential(
+            nn.Linear(d_model, d_model*1),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model*1, patch_len)
+        )
+
+        # self.patch_decoder = nn.Sequential(
+        #     nn.Linear(d_model, patch_len)
+        # )
+        
         self.spectral = SpectralTimeBlock(seq_len, pred_len, expand)
 
+        self.fusion_weights = nn.Parameter(torch.ones(3)) 
+  
 
     def forward(self, x1, x2, current_epoch=0, max_epochs=1):
-        # s, t: [B, seq_len, C]
-
-        x1 = x1.permute(0, 2, 1)  # [B, C, T]
+        x1 = x1.permute(0, 2, 1)  
         x2 = x2.permute(0, 2, 1)
-
         B, C, I = x1.shape
 
-        channel = self.seasonal_channel(x1)   # [B, C, pred_len]
+        channel = self.seasonal_channel(x1)  
 
         s_flat = x1.reshape(B * C, I)
-
         if self.padding_patch == 'end':
             s_flat = self.padding_patch_layer(s_flat)
 
-        s_patch = s_flat.unfold(
-            dimension=-1,
-            size=self.patch_len,
-            step=self.stride
-        )
-
+        s_patch = s_flat.unfold(dimension=-1, size=self.patch_len, step=self.stride)
         BC, P, L = s_patch.shape
 
         s_patch = s_patch.reshape(BC * P, 1, L)
@@ -408,65 +387,46 @@ class Network(nn.Module):
         s_patch = s_patch.reshape(BC, P, L)
 
         s_patch = self.patch_glu(s_patch)
-        s_patch = F.gelu(s_patch)
         s_patch = self.patch_embed(s_patch)
 
-        s_patch_residual = s_patch
         s_patch = self.transformer_encoder(s_patch)
-        s_patch = s_patch + s_patch_residual
+        x = self.repr_norm(s_patch) # [BC, P, d_model]
+        self._temporal_latent = x.mean(dim=1).view(B, C, -1)  # [B, C, d_model]
+        
+        last_state = x[:, -1, :] 
+        context = self.context_generator(last_state).unsqueeze(1) # [BC, 1, Future_P]
 
-        importance = torch.softmax(
-            self.patch_importance(s_patch),
-            dim=1
-        )
+        x_t = x.transpose(1, 2) # [BC, d_model, P]
+        base_forecast = self.patch_forecast(x_t) # [BC, d_model, Future_P]
 
-        s_patch = s_patch * importance
+        forecast = base_forecast + context 
+        gate = torch.sigmoid(self.forecast_gate(x_t)) # Mở cổng
+        future_features = forecast * gate # [BC, d_model, Future_P]
 
-        x = s_patch
-
-        x = x.transpose(1, 2)
-
-        x = self.patch_forecast(x)
-
-        x = x.transpose(1, 2)
-
-        x = self.patch_decoder(x)
-
-        x = x.reshape(
-            B * C,
-            self.future_patch_num * self.patch_len
-        )
-
-        temporal = x.view(
-            B,
-            C,
-            self.pred_len
-        )
-
-        alpha = torch.sigmoid(self.alpha)
-        s = alpha * channel + (1 - alpha) * temporal
-
-        # s = channel + temporal
+        x_conv = self.smoothing_conv(future_features)
+        future_features = future_features + x_conv 
+        
+        future_features = future_features.transpose(1, 2) # [BC, Future_P, d_model]
+        x_decoded = self.base_linear(future_features) + self.patch_decoder(future_features)
+        
+        x = x_decoded.reshape(B * C, self.future_patch_num * self.patch_len)
+        temporal = x.view(B, C, -1)
 
         spectral = self.spectral(x2).view(B, C, self.pred_len)
-        
-        x = s + spectral
-        x = x.permute(0, 2, 1)
+
+        w = F.softplus(self.fusion_weights)
+        x = w[0] * temporal + w[1] * spectral + w[2] * channel
+        x = x.permute(0,2,1)
 
         aux_losses = {}
         if self.training:
+            channel_latent = self.seasonal_channel._last_latent  # [B, C, D]
+            temporal_latent = self._temporal_latent               # [B, C, D]
+            spectral_latent = self.spectral._last_latent          # [B, C, T]
             aux_losses['decorrelation'] = self.decor_loss(
-                channel, temporal, spectral
+                channel_latent, temporal_latent, spectral_latent
             )
             aux_losses.update(self.seasonal_channel.get_aux_losses())
-
-            adaptive_w = self.aux_weighter.compute_weights(
-                aux_losses,
-                current_epoch=current_epoch,
-                max_epochs=max_epochs
-            )
-            aux_losses['_adaptive_weights'] = adaptive_w
             
-
         return x, aux_losses
     

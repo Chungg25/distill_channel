@@ -14,6 +14,17 @@ import warnings
 import math
 import psutil
 
+def test_model_size(model, filename='temp_model.pt'):
+    torch.save(model.state_dict(), filename)
+    size_mb = os.path.getsize(filename) / (1024 ** 2)
+    print(f"[MODEL SIZE] Model file size: {size_mb:.2f} MB")
+    os.remove(filename)
+
+def test_params_memory(model, input_shape):
+    # Tính số lượng tham số
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"[PARAMS] Total parameters: {total_params:,}")
+
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
@@ -138,25 +149,33 @@ class Exp_Main(Exp_Basic):
                 loss = mae_criterion(outputs, batch_y)
 
                 if aux_losses:
-                    adaptive_w = aux_losses.pop('_adaptive_weights', {})
+                    # Access the aux_weighter from the model
+                    net = self.model
+                    while hasattr(net, 'module'):
+                        net = net.module
+                    if hasattr(net, 'net'):
+                        net = net.net
+
+                    adaptive_w = net.aux_weighter.compute_weights(
+                        aux_losses,
+                        current_epoch=epoch,
+                        max_epochs=self.args.train_epochs,
+                        main_loss=loss.item()
+                    )
+
                     for key in aux_losses:
-                        w = adaptive_w.get(key, 0.01)
+                        if key.startswith('_'):
+                            continue
+
+                        w = adaptive_w.get(key, 0.0)
                         if isinstance(w, torch.Tensor) and w.dim() > 0:
                             w = w.mean()
-                            
+
                         val = aux_losses[key]
                         if isinstance(val, torch.Tensor) and val.dim() > 0:
                             val = val.mean()
-                            
-                        loss = loss + w * val
 
-                # ---- Adaptive Auxiliary Losses ----
-                # if aux_losses:
-                #     adaptive_w = aux_losses.pop('_adaptive_weights', {})
-                #     for key in aux_losses:
-                #         w = adaptive_w.get(key, 0.01)
-                #         # print(key, w)
-                #         loss = loss + w * aux_losses[key]
+                        loss = loss + w * val
 
                 train_loss.append(loss.item())
 
@@ -171,7 +190,14 @@ class Exp_Main(Exp_Basic):
                 loss.backward()
                 model_optim.step()
 
-           
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                mem = torch.cuda.max_memory_allocated(device=self.device) / (1024 ** 2)
+                print(f"[TRAIN MEMORY] Max memory allocated in epoch {epoch+1}: {mem:.2f} MB")
+                torch.cuda.reset_peak_memory_stats(device=self.device)
+            else:
+                print("[TRAIN MEMORY] CUDA not available, cannot measure GPU memory.")
+                
             epoch_duration = time.time() - epoch_time
             epoch_times.append(epoch_duration)  
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
@@ -259,7 +285,9 @@ class Exp_Main(Exp_Basic):
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
-            
+        print("\n--- Model Statistics ---")
+        test_model_size(self.model)
+        test_params_memory(self.model, (batch_x.shape[1], batch_x.shape[2]))
         preds = np.array(preds)
         trues = np.array(trues)
         # preds = np.concatenate(preds, axis=0) # without the "drop-last" trick
