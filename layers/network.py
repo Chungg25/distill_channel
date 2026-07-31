@@ -331,10 +331,10 @@ class Network(nn.Module):
         self.repr_norm = nn.LayerNorm(d_model)
 
         self.patch_forecast = nn.Sequential(
-            nn.Linear(self.patch_num, 32),
+            nn.Linear(self.patch_num, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(32, self.future_patch_num)
+            nn.Linear(d_model, self.future_patch_num)
         )
 
         # self.patch_forecast = nn.Sequential(
