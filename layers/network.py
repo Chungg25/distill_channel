@@ -256,10 +256,10 @@ class SpectralTimeBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.proj = nn.Sequential(
-            nn.Linear(seq_len, 16 * 1),
+            nn.Linear(seq_len, 32 * 1),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(16 * 1, pred_len)
+            nn.Linear(32 * 1, pred_len)
         )
 
     def forward(self, x):
