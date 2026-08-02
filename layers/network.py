@@ -12,14 +12,12 @@ class GroupChannelBlock(nn.Module):
 
         self.embed = nn.Linear(seq_len, d_model)
 
-        # self.group_tokens = nn.Parameter(torch.randn(num_groups, d_model))
         self.group_seed = nn.Parameter(torch.randn(num_groups, d_model))
         
-        # Sinh ra cả Scale (Gamma) và Shift (Beta)
         self.modulator = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.SiLU(),
-            nn.Linear(d_model, d_model * 2) # x2 để chia làm scale và shift
+            nn.Linear(d_model, d_model * 2) 
         )
 
         self.temperature = temperature
