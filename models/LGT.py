@@ -15,7 +15,8 @@ class Model(nn.Module):
         seq_len = configs.seq_len   # lookback window L
         pred_len = configs.pred_len # prediction length (96, 192, 336, 720)
         c_in = configs.enc_in       # input channels
-        d_model = configs.d_model    # dimension of model
+        d_model_channel = configs.d_model_channel    # dimension of model
+        d_model_spectral = configs.d_model_spectral
         period_len = configs.period_len  # period length
         nhead = configs.n_head      # number of attention heads
         expand = configs.expand
@@ -40,7 +41,7 @@ class Model(nn.Module):
 
         self.decomp = DECOMP(self.ma_type, alpha, beta, period_len)
 
-        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, dropout, d_model, nhead, num_layers, expand, num_groups)
+        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, dropout, d_model_channel, d_model_spectral, nhead, num_layers, expand, num_groups)
 
     def forward(self, x, current_epoch=0, max_epochs=1):
         # x: [Batch, Input, Channel]

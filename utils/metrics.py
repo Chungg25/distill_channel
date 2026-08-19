@@ -43,3 +43,21 @@ def metric(pred, true):
 
     return mae, mse
     # return mae, mse, rmse, mape, mspe, rse, corr
+
+# def CORR(pred, true):
+#     # true, pred: [N, pred_len, C]
+#     # Tính per-timestep, avg over channels
+    
+#     true_mean = true.mean(0, keepdims=True)   # [1, pred_len, C]
+#     pred_mean = pred.mean(0, keepdims=True)
+
+#     a = true - true_mean  # [N, pred_len, C]
+#     b = pred - pred_mean
+
+#     # Pearson đúng
+#     num = (a * b).sum(0)                           # [pred_len, C]
+#     den = np.sqrt((a**2).sum(0)) * np.sqrt((b**2).sum(0))  # [pred_len, C]
+#     den += 1e-12
+
+#     corr_per_step = (num / den).mean(-1)           # [pred_len]  ∈ [-1, 1]
+#     return corr_per_step
