@@ -23,8 +23,7 @@ parser.add_argument('--model_id', type=str, required=True, default='test', help=
 parser.add_argument('--model', type=str, required=True, default='xPatch',
                     help='model name, options: [xPatch]')
 parser.add_argument('--period_len', type=int, default=24, help='period length')
-parser.add_argument('--d_model_channel', type=int, default=64, help='dimension of model')
-parser.add_argument('--d_model_spectral', type=int, default=16, help='dimension of model')
+parser.add_argument('--d_model', type=int, default=128, help='dimension of model')
 parser.add_argument('--n_head', type=int, default=4, help='number of attention heads')
 parser.add_argument('--expand', type=int, default=2, help='expansion factor for the model')
 parser.add_argument('--num_groups', type=int, default=128, help='number of group channels')
