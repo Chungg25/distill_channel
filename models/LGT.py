@@ -41,7 +41,7 @@ class Model(nn.Module):
 
         self.decomp = DECOMP(self.ma_type, alpha, beta, period_len)
 
-        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, dropout, d_model, d_spectral, nhead, num_layers, expand, num_groups)
+        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, dropout, d_model, nhead, num_layers, expand, num_groups)
 
     def forward(self, x, current_epoch=0, max_epochs=1):
         # x: [Batch, Input, Channel]
