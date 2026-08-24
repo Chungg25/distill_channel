@@ -19,7 +19,7 @@ class GroupChannelBlock(nn.Module):
         self.modulator = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.SiLU(),
-            nn.Linear(d_model, d_model * 2)
+            nn.Linear(d_model, d_model * 2) # x2 để chia làm scale và shift
         )
 
         self.temperature = temperature
@@ -40,7 +40,7 @@ class GroupChannelBlock(nn.Module):
                 "norm2": nn.LayerNorm(d_model),
                 "attn_gate": nn.Linear(d_model, d_model),
             })
-            for _ in range(1)
+            for _ in range(num_layers)
         ])
 
         self.channel_gate = nn.Sequential(
@@ -245,6 +245,7 @@ class SpectralTimeBlock(nn.Module):
 
         self.norm = nn.LayerNorm(seq_len)
 
+        bottleneck_dim = max(16, seq_len // 8)
         self.res_gate = nn.Sequential(
             nn.Linear(seq_len, seq_len//2),
             nn.GELU(),                           
@@ -255,10 +256,10 @@ class SpectralTimeBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.proj = nn.Sequential(
-            nn.Linear(seq_len, 336 * 2),
+            nn.Linear(seq_len, 32 * 1),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(336 * 2, pred_len)
+            nn.Linear(32 * 1, pred_len)
         )
 
     def forward(self, x):
@@ -330,10 +331,10 @@ class Network(nn.Module):
         self.repr_norm = nn.LayerNorm(d_model)
 
         self.patch_forecast = nn.Sequential(
-            nn.Linear(self.patch_num, d_model*2),
+            nn.Linear(self.patch_num, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model*2, self.future_patch_num)
+            nn.Linear(d_model, self.future_patch_num)
         )
 
         # self.patch_forecast = nn.Sequential(
@@ -350,10 +351,10 @@ class Network(nn.Module):
         
         self.base_linear = nn.Linear(d_model, patch_len)
         self.patch_decoder = nn.Sequential(
-            nn.Linear(d_model, d_model*2),
+            nn.Linear(d_model, d_model*1),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model*2, patch_len)
+            nn.Linear(d_model*1, patch_len)
         )
 
         # self.patch_decoder = nn.Sequential(
@@ -362,7 +363,7 @@ class Network(nn.Module):
         
         self.spectral = SpectralTimeBlock(seq_len, pred_len, expand)
 
-        self.fusion_weights = nn.Parameter(torch.ones(3)) 
+        self.fusion_weights = nn.Parameter(torch.ones(2)) 
   
 
     def forward(self, x1, x2, current_epoch=0, max_epochs=1):
@@ -379,53 +380,52 @@ class Network(nn.Module):
         s_patch = s_flat.unfold(dimension=-1, size=self.patch_len, step=self.stride)
         BC, P, L = s_patch.shape
 
-        s_patch = s_patch.reshape(BC * P, 1, L)
-        residual = s_patch
-        s_patch = self.patch_conv(s_patch)
-        s_patch = s_patch + residual
-        s_patch = s_patch.reshape(BC, P, L)
+        # s_patch = s_patch.reshape(BC * P, 1, L)
+        # residual = s_patch
+        # s_patch = self.patch_conv(s_patch)
+        # s_patch = s_patch + residual
+        # s_patch = s_patch.reshape(BC, P, L)
 
-        s_patch = self.patch_glu(s_patch)
-        s_patch = self.patch_embed(s_patch)
+        # s_patch = self.patch_glu(s_patch)
+        # s_patch = self.patch_embed(s_patch)
 
-        s_patch = self.transformer_encoder(s_patch)
-        x = self.repr_norm(s_patch) # [BC, P, d_model]
-        self._temporal_latent = x.mean(dim=1).view(B, C, -1)  # [B, C, d_model]
+        # s_patch = self.transformer_encoder(s_patch)
+        # x = self.repr_norm(s_patch) # [BC, P, d_model]
+        # self._temporal_latent = x.mean(dim=1).view(B, C, -1)  # [B, C, d_model]
         
-        last_state = x[:, -1, :] 
-        context = self.context_generator(last_state).unsqueeze(1) # [BC, 1, Future_P]
+        # last_state = x[:, -1, :] 
+        # context = self.context_generator(last_state).unsqueeze(1) # [BC, 1, Future_P]
 
-        x_t = x.transpose(1, 2) # [BC, d_model, P]
-        base_forecast = self.patch_forecast(x_t) # [BC, d_model, Future_P]
+        # x_t = x.transpose(1, 2) # [BC, d_model, P]
+        # base_forecast = self.patch_forecast(x_t) # [BC, d_model, Future_P]
 
-        forecast = base_forecast + context 
-        gate = torch.sigmoid(self.forecast_gate(x_t)) # Mở cổng
-        future_features = forecast * gate # [BC, d_model, Future_P]
+        # forecast = base_forecast + context 
+        # gate = torch.sigmoid(self.forecast_gate(x_t)) # Mở cổng
+        # future_features = forecast * gate # [BC, d_model, Future_P]
 
-        x_conv = self.smoothing_conv(future_features)
-        future_features = future_features + x_conv 
+        # x_conv = self.smoothing_conv(future_features)
+        # future_features = future_features + x_conv 
         
-        future_features = future_features.transpose(1, 2) # [BC, Future_P, d_model]
-        x_decoded = self.base_linear(future_features) + self.patch_decoder(future_features)
+        # future_features = future_features.transpose(1, 2) # [BC, Future_P, d_model]
+        # x_decoded = self.base_linear(future_features) + self.patch_decoder(future_features)
         
-        x = x_decoded.reshape(B * C, self.future_patch_num * self.patch_len)
-        temporal = x.view(B, C, -1)
+        # x = x_decoded.reshape(B * C, self.future_patch_num * self.patch_len)
+        # temporal = x.view(B, C, -1)
 
         spectral = self.spectral(x2).view(B, C, self.pred_len)
 
         w = F.softplus(self.fusion_weights)
-        x = w[0] * temporal + w[1] * spectral + w[2] * channel
+        x = w[0] * spectral + w[1] * channel
         x = x.permute(0,2,1)
 
         aux_losses = {}
         if self.training:
             channel_latent = self.seasonal_channel._last_latent  # [B, C, D]
-            temporal_latent = self._temporal_latent               # [B, C, D]
+            # temporal_latent = self._temporal_latent               # [B, C, D]
             spectral_latent = self.spectral._last_latent          # [B, C, T]
             aux_losses['decorrelation'] = self.decor_loss(
-                channel_latent, temporal_latent, spectral_latent
+                channel_latent, spectral_latent
             )
             aux_losses.update(self.seasonal_channel.get_aux_losses())
             
         return x, aux_losses
-    
