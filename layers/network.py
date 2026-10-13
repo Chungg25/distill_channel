@@ -179,8 +179,8 @@ class SpectralView(nn.Module):
         self.phase_shift = nn.Parameter(torch.zeros(n_freq))
         self.noise_rho = nn.Parameter(torch.full((n_freq,), -4.0))       
         self.norm = nn.LayerNorm(seq_len)
-        self.res_gate = nn.Sequential(nn.Linear(seq_len, 64), nn.GELU(),
-                                      nn.Linear(64, seq_len), nn.Sigmoid())
+        self.res_gate = nn.Sequential(nn.Linear(seq_len, 32), nn.GELU(),
+                                      nn.Linear(32, seq_len), nn.Sigmoid())
         self.dropout = nn.Dropout(dropout)
         self.coef = nn.Sequential(nn.Linear(seq_len, width), nn.GELU(), nn.Dropout(dropout),
                                   nn.Linear(width, rank))
