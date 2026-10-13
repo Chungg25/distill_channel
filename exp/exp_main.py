@@ -3,6 +3,7 @@ from exp.exp_basic import Exp_Basic
 from models import LGT
 from utils.tools import EarlyStopping, adjust_learning_rate, visual
 from utils.metrics import metric
+from layers.network import ViewDiagnostics
 
 import numpy as np
 import torch
@@ -69,7 +70,8 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
-                result = self.model(batch_x)
+                # calendar of input / target timestamps only (no target values -> no leakage)
+                result = self.model(batch_x, x_mark=batch_x_mark, y_mark=batch_y_mark)
                 if isinstance(result, tuple):
                     outputs, _ = result
                 else:
@@ -133,7 +135,8 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
                 # result = self.model(batch_x)
-                result = self.model(batch_x, current_epoch=epoch, max_epochs=self.args.train_epochs)
+                result = self.model(batch_x, current_epoch=epoch, max_epochs=self.args.train_epochs,
+                                    x_mark=batch_x_mark, y_mark=batch_y_mark)
                 if isinstance(result, tuple):
                     outputs, aux_losses = result
                 else:
@@ -146,36 +149,7 @@ class Exp_Main(Exp_Basic):
                 outputs = outputs
                 batch_y = batch_y
 
-                loss = mae_criterion(outputs, batch_y)
-
-                if aux_losses:
-                    # Access the aux_weighter from the model
-                    net = self.model
-                    while hasattr(net, 'module'):
-                        net = net.module
-                    if hasattr(net, 'net'):
-                        net = net.net
-
-                    adaptive_w = net.aux_weighter.compute_weights(
-                        aux_losses,
-                        current_epoch=epoch,
-                        max_epochs=self.args.train_epochs,
-                        main_loss=loss.item()
-                    )
-
-                    for key in aux_losses:
-                        if key.startswith('_'):
-                            continue
-
-                        w = adaptive_w.get(key, 0.0)
-                        if isinstance(w, torch.Tensor) and w.dim() > 0:
-                            w = w.mean()
-
-                        val = aux_losses[key]
-                        if isinstance(val, torch.Tensor) and val.dim() > 0:
-                            val = val.mean()
-
-                        loss = loss + w * val
+                loss = mae_criterion(outputs, batch_y)          # the only training loss
 
                 train_loss.append(loss.item())
 
@@ -233,6 +207,28 @@ class Exp_Main(Exp_Basic):
 
         return self.model
 
+    @staticmethod
+    def _print_diagnostics(r, folder_path):
+        np.set_printoptions(precision=4, suppress=True, linewidth=150)
+        names = ['temporal', 'spectral', 'channel']
+        print('\n--- Views on the test set (MAE, data space) ---')
+        print('MAE per view   :', r['mae_view'].numpy(), '| fused:', round(r['mae_fused'], 5))
+        print('mean weight    :', r['mean_weight'].numpy())
+        print('Jensen gain    : %.5f  (MAE(fused) = sum_v w_v MAE(view_v) - Jensen gain)' % r['jensen_gain'])
+        print('error corr     :\n', r['error_corr'].numpy())
+        if 'cross_gain' in r:
+            print('cross-channel  : MAE without the other channels %.5f -> with them %.5f (gain %.5f, exact counterfactual)'
+                  % (r['mae_without_cross'], r['mae_fused'], r['cross_gain']))
+        if 'shapley' in r:
+            print('\n--- Exact Shapley attribution, v(S) = MAE(window mean) - MAE(sub-ensemble S) ---')
+            print('baseline MAE %.5f | v(all) %.5f' % (r['mae_baseline'], float(r['value'][7])))
+            for i, nm in enumerate(names):
+                print('%-9s Shapley %.5f (%5.1f%%) | alone v=%.5f | unique %.5f'
+                      % (nm, r['shapley'][i], 100 * r['shapley_share'][i], r['value'][1 << i], r['unique'][i]))
+            print('interaction index (<0 shared information, >0 synergy):\n', r['interaction'].numpy())
+        np.save(folder_path + 'view_diagnostics.npy',
+                {k: (v.numpy() if torch.is_tensor(v) else v) for k, v in r.items()}, allow_pickle=True)
+
     def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
         
@@ -247,6 +243,8 @@ class Exp_Main(Exp_Basic):
             os.makedirs(folder_path)
 
         # test_time = 0 # For computational cost analysis
+        wrapper = self.model.module if hasattr(self.model, 'module') else self.model
+        view_diag = ViewDiagnostics() if hasattr(wrapper, 'forward_views') else None
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
@@ -261,7 +259,8 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                result = self.model(batch_x)
+                # calendar of input / target timestamps only (no target values -> no leakage)
+                result = self.model(batch_x, x_mark=batch_x_mark, y_mark=batch_y_mark)
                 if isinstance(result, tuple):
                     outputs, _ = result
                 else:
@@ -271,6 +270,10 @@ class Exp_Main(Exp_Basic):
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                if view_diag is not None and self.args.features != 'MS':
+                    # evaluation-only analysis: targets are compared with each view, never trained on
+                    vd = wrapper.forward_views(batch_x, x_mark=batch_x_mark, y_mark=batch_y_mark)
+                    view_diag.update(vd['views'], vd['weights'], batch_y, x=batch_x, cross=vd['cross'])
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
 
@@ -303,6 +306,8 @@ class Exp_Main(Exp_Basic):
 
         mae, mse = metric(preds, trues)
         print('mse:{}, mae:{}'.format(mse, mae))
+        if view_diag is not None and view_diag.n > 0:
+            self._print_diagnostics(view_diag.result(), folder_path)
         f = open("result.txt", 'a')
         f.write(setting + "  \n")
         f.write('mse:{}, mae:{}'.format(mse, mae))
