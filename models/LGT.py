@@ -102,25 +102,6 @@ class Model(nn.Module):
             cross = cross * scale
         return {'views': views, 'weights': w, 'fused': fused, 'cross': cross}
 
-    def coalition_forecasts(self, coalition_fusion, x, y_mark=None):
-        """Forecasts of the 7 view subsets with their re-fitted fusion, in the data space [B, 7, H, C].
-        The views are computed without gradient (frozen); gradients flow only into coalition_fusion."""
-        if self.revin:
-            x = self.revin_layer(x, 'norm')
-        x1, x2 = self._inputs(x)
-        raw, omega = self.net.view_parts(x1, x2, self._future_marks(y_mark))       # [B, 3, C, H], [B, C]
-        out = coalition_fusion(raw, omega).transpose(2, 3)                          # [B, 7, H, C]
-        if self.revin:
-            B, M, H, C = out.shape
-            out = self.revin_layer(out.reshape(B, M * H, C), 'denorm').reshape(B, M, H, C)
-        return out
-
-    @torch.no_grad()
-    def horizon_basis(self, y_mark=None):
-        """Horizon basis U [B or 1, H, R] of this batch (analysis only)."""
-        m = self._future_marks(y_mark)
-        return self.net.basis(None if m is None else m[..., :2])
-
     def load_transfer(self, state):
         """Load weights trained on another data set (any number of channels). Only the per-channel RevIN
         calibration may differ in shape; it keeps this model's identity initialisation. Returns the
